@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>RAG 文档助手</title>
+    <style>
+        body {
+            font-family: Arial, "Microsoft YaHei", sans-serif;
+            background: #f5f7fb;
+            margin: 0;
+            padding: 40px;
+        }
+
+        .container {
+            max-width: 900px;
+            margin: auto;
+            background: white;
+            padding: 30px;
+            border-radius: 14px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.08);
+        }
+
+        h1 {
+            color: #2454ff;
+            margin-bottom: 10px;
+        }
+
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+        }
+
+        .section {
+            margin-top: 30px;
+            padding: 20px;
+            background: #f8f9ff;
+            border-radius: 12px;
+        }
+
+        input[type="file"],
+        input[type="text"] {
+            width: 100%;
+            padding: 12px;
+            margin-top: 10px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            box-sizing: border-box;
+        }
+
+        button {
+            margin-top: 15px;
+            padding: 12px 22px;
+            border: none;
+            border-radius: 8px;
+            background: #2454ff;
+            color: white;
+            cursor: pointer;
+            font-size: 15px;
+        }
+
+        button:hover {
+            background: #173bd1;
+        }
+
+        pre {
+            white-space: pre-wrap;
+            background: #ffffff;
+            padding: 15px;
+            border-radius: 8px;
+            border: 1px solid #eee;
+            line-height: 1.6;
+        }
+
+        .source {
+            background: white;
+            padding: 12px;
+            margin-top: 10px;
+            border-left: 4px solid #2454ff;
+            border-radius: 6px;
+            font-size: 14px;
+            color: #444;
+        }
+
+        .loading {
+            color: #2454ff;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h1>RAG 文档助手</h1>
+    <div class="subtitle">上传文档后，系统会基于文档内容回答你的问题。</div>
+
+    <div class="section">
+        <h2>1. 上传文档</h2>
+        <p>支持 txt、pdf、docx</p>
+        <input type="file" id="fileInput">
+        <button onclick="uploadFile()">上传并构建知识库</button>
+        <button onclick="clearKnowledgeBase()">清空知识库</button>
+        <button onclick="clearMemory()">清空对话记忆</button>
+        <div id="uploadStatus" class="loading"></div>
+    </div>
+
+    <div class="section">
+        <h2>2. 文档问答</h2>
+        <button onclick="askAgent()">
+            Agent模式提问
+        </button>
+        <button onclick="askGraphAgent()">
+            LangGraph多节点Agent提问
+        </button>
+        <input type="text" id="questionInput" placeholder="请输入你的问题，例如：这篇文档主要讲了什么？">
+        <button onclick="askQuestion()">提问</button>
+
+        <h3>改写后的检索问题：</h3>
+        <pre id="rewriteBox">暂无</pre>
+
+        <h3>回答：</h3>
+        <pre id="answerBox">暂无回答</pre>
+
+        <h3>引用片段：</h3>
+        <div id="sourceBox"></div>
+    </div>
+</div>
+
+<script>
+    async function uploadFile() {
+        const fileInput = document.getElementById("fileInput");
+        const uploadStatus = document.getElementById("uploadStatus");
+
+        if (fileInput.files.length === 0) {
+            alert("请先选择一个文件");
+            return;
+        }
+
+        const formData = new FormData();
+        formData.append("file", fileInput.files[0]);
+
+        uploadStatus.innerText = "正在上传并构建知识库，请稍等...";
+
+        const response = await fetch("/upload", {
+            method: "POST",
+            body: formData
+        });
+
+        const data = await response.json();
+
+        if (response.ok) {
+            uploadStatus.innerText = `上传成功：${data.filename}，共切分 ${data.chunk_count} 个文本块`;
+        } else {
+            uploadStatus.innerText = "上传失败：" + JSON.stringify(data);
+        }
+    }
+
+    async function askQuestion() {
+        const questionInput = document.getElementById("questionInput");
+        const rewriteBox = document.getElementById("rewriteBox");
+        const answerBox = document.getElementById("answerBox");
+        const sourceBox = document.getElementById("sourceBox");
+
+        const question = questionInput.value.trim();
+
+        if (!question) {
+            alert("请输入问题");
+            return;
+        }
+
+        rewriteBox.innerText = "正在改写问题...";
+        answerBox.innerText = "正在检索文档并生成回答...";
+        sourceBox.innerHTML = "";
+
+        const formData = new FormData();
+        formData.append("question", question);
+
+        const response = await fetch("/ask", {
+            method: "POST",
+            body: formData
+        });
+
+        const data = await response.json();
+
+
+        rewriteBox.innerText = data.rewritten_question || "未进行改写";
+        answerBox.innerText = data.answer;
+
+        sourceBox.innerHTML = "";
+
+        if (data.sources && data.sources.length > 0) {
+    sourceBox.innerHTML = "";
+
+    data.sources.forEach((source, index) => {
+        const div = document.createElement("div");
+        div.className = "source";
+
+        let scoreText = "暂无";
+
+        if (source.rerank_score !== undefined && source.rerank_score !== null) {
+            scoreText = Number(source.rerank_score).toFixed(4);
+        }
+
+        div.innerText =
+            "引用 " + (index + 1) + "\n" +
+            "文件名：" + source.filename + "\n" +
+            "片段编号：" + source.chunk_index + "\n" +
+            "Rerank分数：" + scoreText + "\n\n" +
+            source.content;
+
+        sourceBox.appendChild(div);
+    });
+} else {
+    sourceBox.innerText = "没有引用片段";
+}
+    }
+
+
+    async function clearKnowledgeBase() {
+    const uploadStatus = document.getElementById("uploadStatus");
+
+    const confirmClear = confirm("确定要清空当前知识库吗？");
+
+    if (!confirmClear) {
+        return;
+    }
+
+    uploadStatus.innerText = "正在清空知识库...";
+
+    const response = await fetch("/clear", {
+        method: "POST"
+    });
+
+    const data = await response.json();
+
+    if (response.ok) {
+        uploadStatus.innerText = data.message;
+        document.getElementById("rewriteBox").innerText = "暂无";
+        document.getElementById("answerBox").innerText = "暂无回答";
+        document.getElementById("sourceBox").innerHTML = "";
+    } else {
+        uploadStatus.innerText = "清空失败：" + JSON.stringify(data);
+    }
+}
+
+async function clearMemory() {
+    const uploadStatus = document.getElementById("uploadStatus");
+
+    uploadStatus.innerText = "正在清空对话记忆...";
+
+    const response = await fetch("/clear-memory", {
+        method: "POST"
+    });
+
+    const data = await response.json();
+
+    if (response.ok) {
+        uploadStatus.innerText = data.message;
+        document.getElementById("rewriteBox").innerText = "暂无";
+    } else {
+        uploadStatus.innerText = "清空失败：" + JSON.stringify(data);
+    }
+}
+
+async function askAgent() {
+
+    const question =
+        document.getElementById("questionInput").value;
+
+    const formData = new FormData();
+
+    formData.append(
+        "question",
+        question
+    );
+
+    const response =
+        await fetch(
+            "/agent",
+            {
+                method:"POST",
+                body:formData
+            }
+        );
+
+    const data =
+        await response.json();
+
+    document.getElementById("rewriteBox")
+        .innerText =
+        "Agent选择工具：" + data.tool;
+
+    document.getElementById("answerBox")
+        .innerText =
+        data.answer;
+}
+
+async function askGraphAgent() {
+    const question = document.getElementById("questionInput").value.trim();
+
+    if (!question) {
+        alert("请输入问题");
+        return;
+    }
+
+    const rewriteBox = document.getElementById("rewriteBox");
+    const answerBox = document.getElementById("answerBox");
+    const sourceBox = document.getElementById("sourceBox");
+
+    rewriteBox.innerText = "LangGraph Agent 正在规划工具...";
+    answerBox.innerText = "正在执行多节点工作流...";
+    sourceBox.innerHTML = "";
+
+    const formData = new FormData();
+    formData.append("question", question);
+
+    const response = await fetch("/graph-agent", {
+        method: "POST",
+        body: formData
+    });
+
+    const data = await response.json();
+
+    rewriteBox.innerText =
+        "Planner选择工具：" + data.tool + "\n\n" +
+        "Reviewer检查：" + data.review;
+
+    answerBox.innerText = data.answer;
+
+    if (data.tool_result) {
+        const div = document.createElement("div");
+        div.className = "source";
+        div.innerText = "工具返回结果：\n" + JSON.stringify(data.tool_result, null, 2);
+        sourceBox.appendChild(div);
+    }
+}
+</script>
+</body>
+</html>
